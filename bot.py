@@ -24,7 +24,7 @@ from database import Base, engine
 base_dir = os.path.dirname(os.path.abspath(__file__))
 load_dotenv(os.path.join(base_dir, ".env"))
 
-TOKEN = os.getenv("DISCORD_TOKEN")
+TOKEN = os.getenv("TOKEN")
 SECRET = os.getenv("SECRET_KEY")
 HOST = os.getenv("DB_HOST")
 
