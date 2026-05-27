@@ -1,0 +1,104 @@
+# ================================================
+# REQUIREMENTS.TXT - VERSÃO OTIMIZADA
+# ================================================
+# Mantenha as mesmas dependências. Não há novos pacotes!
+# O sistema otimizado usa apenas bibliotecas padrão do Python
+
+discord.py==2.3.2
+python-dotenv==1.0.0
+sqlalchemy==2.0.23
+qrcode==7.4.2
+Pillow==10.1.0
+Flask==2.3.0  # Adicionar se não tiver
+
+# ================================================
+# NOTAS IMPORTANTES
+# ================================================
+
+# ✅ Nenhuma dependência EXTRA foi adicionada!
+# Todas as otimizações usam:
+#   - asyncio (built-in Python)
+#   - threading (built-in Python)
+#   - time/datetime (built-in Python)
+#   - dataclasses (built-in Python 3.7+)
+#   - collections (built-in Python)
+
+# Isso significa:
+# ✅ Sem sobrecarga de dependências
+# ✅ Compatível com Python 3.8+
+# ✅ Fácil de instalar na VPS
+# ✅ Menos vulnerabilidades de segurança
+
+# ================================================
+# COMO USAR NA VPS
+# ================================================
+
+# 1. Fazer backup do requirements.txt atual:
+# $ cp requirements.txt requirements_old.txt
+
+# 2. Se usar este arquivo, apenas certifique que tem Flask:
+# $ pip install -r requirements.txt
+
+# 3. Testar importações:
+# $ python -c "import asyncio; import dataclasses; print('OK')"
+
+# ================================================
+# VERSÃO PYTHON MÍNIMA RECOMENDADA
+# ================================================
+
+# Python 3.8+ (suporta asyncio.TaskGroup no 3.11, mas não é crítico)
+# Python 3.10+ (recomendado para melhor performance)
+
+# Verificar na VPS:
+# $ python3 --version
+
+# Se estiver em 3.8 ou 3.9, funciona mas com pequenas ressalvas:
+# - Algumas features asyncio mais recentes não disponíveis
+# - Performance será ~5-10% mais lenta
+# - Recomendação: atualizar para 3.11+
+
+# ================================================
+# INSTALAÇÃO NA VPS (IONOS)
+# ================================================
+
+# 1. SSH na VPS
+# $ ssh user@sua-vps.com
+
+# 2. Navegar até o projeto
+# $ cd /caminho/do/bot_filas
+
+# 3. Instalar dependências (se não tiver venv, criar):
+# $ python3 -m venv venv
+# $ source venv/bin/activate
+# $ pip install --upgrade pip
+# $ pip install -r requirements.txt
+
+# 4. Copiar novos arquivos
+# $ scp cache_manager.py user@sua-vps:/caminho/do/bot_filas/
+# $ scp queue_manager.py user@sua-vps:/caminho/do/bot_filas/
+# ... etc
+
+# 5. Testar importações
+# $ python3 -c "from cache_manager import cache; print('Cache OK')"
+# $ python3 -c "from queue_manager import queue_manager; print('Queue OK')"
+
+# 6. Rodar bot
+# $ python3 bot.py
+
+# ================================================
+# TROUBLESHOOTING NA VPS
+# ================================================
+
+# "ImportError: cannot import name"
+# → Verificar se arquivo .py está na pasta certa
+# → Verificar sintaxe: python3 -m py_compile arquivo.py
+
+# "ModuleNotFoundError: No module named 'asyncio'"
+# → Atualizar Python: apt-get install python3.11
+
+# "sqlite3.OperationalError"
+# → Verificar permissões do arquivo: chmod 644 partidas.db
+
+# Memória alta?
+# $ free -h
+# Se muito alta, reduzir TTL do cache em cache_manager.py

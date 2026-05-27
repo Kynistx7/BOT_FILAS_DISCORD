@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dashboard - Gerenciador de Apostas</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <meta http-equiv="refresh" content="10">
+</head>
+<body>
+    <header>
+        <div class="header-left">
+            <div class="logo">Central Arena <span>Staff</span></div>
+            <p class="subtitle">Gerenciamento de partidas em tempo real.</p>
+        </div>
+        <div class="header-right">
+            <div class="status-server">Sincronizado agora</div>
+            <div class="update-note">Atualização automática a cada 10 segundos</div>
+        </div>
+    </header>
+
+    <main class="container">
+        <section class="overview-panel">
+            <div class="overview-header">
+                <div>
+                    <p class="eyebrow">Resumo Operacional</p>
+                    <h1>Visão Geral das Partidas</h1>
+                </div>
+                <div class="overview-badge">Sistema ativo</div>
+            </div>
+            <p class="overview-text">Veja o status dos canais, controle as salas rapidamente e acompanhe as partidas em andamento com um visual limpo e funcional.</p>
+
+            <div class="filter-panel">
+                <form class="filter-form" action="{{ url_for('dashboard') }}" method="get">
+                    <div class="filter-row">
+                        <label>
+                            <span>Status</span>
+                            <select name="status">
+                                {% for status in status_options %}
+                                <option value="{{ status }}" {% if selected_status == status %}selected{% endif %}>{{ status }}</option>
+                                {% endfor %}
+                            </select>
+                        </label>
+                        <label>
+                            <span>Modalidade</span>
+                            <select name="modalidade">
+                                <option value="Todos" {% if selected_modalidade == 'Todos' %}selected{% endif %}>Todos</option>
+                                {% for modalidade in modalidades %}
+                                <option value="{{ modalidade }}" {% if selected_modalidade == modalidade %}selected{% endif %}>{{ modalidade }}</option>
+                                {% endfor %}
+                            </select>
+                        </label>
+                        <label class="full-width">
+                            <span>Busca</span>
+                            <input type="search" name="busca" placeholder="ID, jogador ou ADM" value="{{ busca }}">
+                        </label>
+                    </div>
+                    <div class="filter-actions">
+                        <button type="submit" class="btn btn-primary">Aplicar filtro</button>
+                        <a href="{{ url_for('dashboard') }}" class="btn btn-secondary">Limpar</a>
+                    </div>
+                </form>
+            </div>
+
+            <div class="stats-grid">
+                <article class="stat-card">
+                    <div>
+                        <p class="stat-label">Partidas exibidas</p>
+                        <strong>{{ total_partidas }}</strong>
+                    </div>
+                </article>
+                <article class="stat-card">
+                    <div>
+                        <p class="stat-label">Aguardando pagamento</p>
+                        <strong>{{ status_counts['Aguardando Pagamento'] }}</strong>
+                    </div>
+                </article>
+                <article class="stat-card">
+                    <div>
+                        <p class="stat-label">Jogo liberado</p>
+                        <strong>{{ status_counts['Jogo Liberado'] }}</strong>
+                    </div>
+                </article>
+                <article class="stat-card">
+                    <div>
+                        <p class="stat-label">Valor no filtro</p>
+                        <strong>R$ {{ "%.2f"|format(total_valor) }}</strong>
+                    </div>
+                </article>
+            </div>
+        </section>
+
+        <section class="table-panel">
+            <div class="panel-header">
+                <div>
+                    <h2>Jogos recentes</h2>
+                    <p class="panel-subtitle">Acompanhe cada partida do sistema com ações rápidas e status claros.</p>
+                </div>
+                <span class="panel-tag">{{ partidas|length }} entradas</span>
+            </div>
+
+            {% if partidas %}
+            <div class="table-responsive">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>ID</th>
+                            <th>Modalidade</th>
+                            <th>Valor</th>
+                            <th>Confronto</th>
+                            <th>ADM</th>
+                            <th>Status</th>
+                            <th>Ações</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for partida in partidas %}
+                        <tr>
+                            <td><strong>#{{ partida.id }}</strong></td>
+                            <td><span class="badge modalidade">{{ partida.modalidade }}</span></td>
+                            <td><span class="valor-aposta">R$ {{ "%.2f"|format(partida.valor) }}</span></td>
+                            <td>
+                                <div class="player-wrapper">
+                                    <span class="player">{{ partida.jogador1 }}</span>
+                                    <span class="vs">VS</span>
+                                    <span class="player">{{ partida.jogador2 }}</span>
+                                </div>
+                            </td>
+                            <td><code>@{{ partida.adm_id }}</code></td>
+                            <td>
+                                <span class="badge status-badge status-{{ partida.status.lower().replace(' ', '-') }}">{{ partida.status }}</span>
+                            </td>
+                            <td>
+                                {% if partida.status != 'Cancelada via Web' and 'Finalizada' not in partida.status %}
+                                <a href="/cancelar/{{ partida.id }}" class="btn-cancelar">Derrubar Sala</a>
+                                {% else %}
+                                <span class="txt-encerrado">Encerrado</span>
+                                {% endif %}
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+            {% else %}
+            <div class="empty-state">
+                <h3>Nenhuma partida encontrada</h3>
+                <p>Use os filtros acima para encontrar partidas por status, modalidade, jogador ou ADM.</p>
+            </div>
+            {% endif %}
+        </section>
+    </main>
+</body>
+</html>
