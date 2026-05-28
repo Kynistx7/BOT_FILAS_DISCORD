@@ -7,6 +7,8 @@ import re
 import io
 import qrcode
 from dotenv import load_dotenv
+from dataclasses import dataclass
+
 
 from database_v2 import SessionLocal, PartidaDB, JogadorStatsDB, init_db
 from queue_manager import queue_manager
@@ -24,7 +26,7 @@ from database import Base, engine
 base_dir = os.path.dirname(os.path.abspath(__file__))
 load_dotenv(os.path.join(base_dir, ".env"))
 
-TOKEN = os.getenv("TOKEN")
+TOKEN = os.getenv("DISCORD_TOKEN")
 SECRET = os.getenv("SECRET_KEY")
 HOST = os.getenv("DB_HOST")
 
@@ -79,9 +81,20 @@ PADRAO_ALEATORIA = r"\b[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{
 # =========================================================
 # ADMINS FINANCEIROS (CHAVES PIX)
 # =========================================================
+@dataclass(frozen=True)
+class AdminFinanceiro:
+    id: int
+    pix: str
+
 adms = [
-    {"id": 1442654638108311562, "pix": "61130967859"},
-    {"id": 1490495083446014133, "pix": "11914711528"},
+    AdminFinanceiro(
+        id=1442654638108311562,
+        pix="61130967859"
+    ),
+    AdminFinanceiro(
+        id=1490495083446014133,
+        pix="11914711528"
+    )
 ]
 
 def escolher_adm():
@@ -125,7 +138,7 @@ painel_mensagens_ids = {}
 # HELPERS DE PERMISSÃO
 # =========================================================
 def tem_permissao_gerenciar(user: discord.Member, partida: dict) -> bool:
-    if user.id == partida["adm"]["id"]:
+    if user.id == partida["adm"].id:
         return True
     nomes_cargos_usuario = [role.name for role in user.roles]
     for cargo_permitido in CARGOS_STAFF_PERMITIDOS:
@@ -134,7 +147,126 @@ def tem_permissao_gerenciar(user: discord.Member, partida: dict) -> bool:
     return False
 
 # =========================================================
-# VIEWS DO SISTEMA
+# FUNÇÃO CRIAR PARTIDA CORRIGIDA
+# =========================================================
+async def criar_partida(guild, canal_origem_id, p1, p2, valor, modalidade_nome):
+    """Cria um canal privado para a partida e gerencia o fluxo"""
+    try:
+        dados_canal = TODOS_OS_CANAIS.get(canal_origem_id)
+        if not dados_canal:
+            print(f"❌ Canal de origem {canal_origem_id} não encontrado nas configs")
+            return False
+
+        categoria_id = dados_canal["categoria"]
+        categoria = guild.get_channel(categoria_id)
+        
+        if not categoria:
+            print(f"❌ Categoria {categoria_id} não encontrada")
+            return False
+
+        # Nome do canal mais curto
+        nome_canal = f"partida-{p1.display_name[:8]}-vs-{p2.display_name[:8]}"
+        
+        overwrites = {
+            guild.default_role: discord.PermissionOverwrite(read_messages=False),
+            p1: discord.PermissionOverwrite(read_messages=True, send_messages=True, view_channel=True),
+            p2: discord.PermissionOverwrite(read_messages=True, send_messages=True, view_channel=True)
+        }
+        
+        # Adicionar permissões para staff
+        for cargo_permitido in CARGOS_STAFF_PERMITIDOS:
+            role = discord.utils.get(guild.roles, name=cargo_permitido)
+            if role:
+                overwrites[role] = discord.PermissionOverwrite(read_messages=True, send_messages=True, view_channel=True)
+
+        print(f"📝 Criando canal para partida: {nome_canal}")
+        novo_canal = await guild.create_text_channel(
+            nome_canal[:95],
+            category=categoria,
+            overwrites=overwrites
+        )
+        print(f"✅ Canal criado: {novo_canal.name}")
+
+        # Escolher ADM fiscal
+        adm_escolhido = escolher_adm()
+        membro_adm = guild.get_member(adm_escolhido.id)
+        
+        if not membro_adm:
+            membro_adm = await guild.fetch_member(adm_escolhido.id)
+            if not membro_adm:
+                print(f"❌ ADM não encontrado")
+                await novo_canal.delete()
+                return False
+
+        # Registrar no banco
+        try:
+            sucesso_db = await criar_partida_db(
+                canal_id=novo_canal.id,
+                modalidade=modalidade_nome,
+                valor=float(valor),
+                jogador1=str(p1),
+                jogador2=str(p2),
+                adm_id=str(adm_escolhido.id)
+            )
+        except Exception as e:
+            print(f"❌ Erro no banco: {e}")
+            await novo_canal.delete()
+            return False
+
+        # Registrar eventos
+        try:
+            await canais_monitor.registrar_operacao(novo_canal.id, sucesso=True)
+            await event_bus.emit(EVENTO_PARTIDA_CRIADA, {
+                "canal_id": novo_canal.id,
+                "jogador1": p1.id,
+                "jogador2": p2.id,
+                "valor": valor
+            })
+        except Exception as e:
+            print(f"⚠️ Erro eventos: {e}")
+
+        # Salvar estado
+        partidas_ativas[novo_canal.id] = {
+            "p1": p1,
+            "p2": p2,
+            "valor": valor,
+            "modalidade": modalidade_nome,
+            "confirmados": [],
+            "adm": membro_adm
+        }
+
+        # Embed do check-in
+        embed_checkin = discord.Embed(
+            title=f"⚔️ CONFRONTO ENCONTRADO - {modalidade_nome}",
+            description=(
+                f"Os jogadores foram pareados!\n\n"
+                f"👉 {p1.mention} **VS** {p2.mention}\n"
+                f"💵 **Valor da Entrada:** R$ {valor}\n\n"
+                f"⚠️ Vocês têm até **2 minutos** para confirmar."
+            ),
+            color=0xE74C3C
+        )
+        embed_checkin.add_field(name="🏆 Premiação Bruta", value=f"R$ {float(valor) * 2:.2f}", inline=True)
+        embed_checkin.add_field(name="👮 Fiscal de Mesa", value=f"<@{membro_adm.id}>", inline=True)
+        embed_checkin.add_field(name="Confirmações", value="⏳ Aguardando ambos...", inline=False)
+
+        await novo_canal.send(
+            content=f"{p1.mention} {p2.mention} | Confirmem presença!",
+            embed=embed_checkin,
+            view=CheckInView()
+        )
+
+        await iniciar_timeout_partida(novo_canal.id)
+        return True
+        
+    except Exception as e:
+        print(f"❌ Erro ao criar partida: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
+
+# =========================================================
+# VIEWS DO SISTEMA (mantidas iguais)
 # =========================================================
 
 class FilaIndividualView(discord.ui.View):
@@ -265,7 +397,7 @@ class CheckInView(discord.ui.View):
                 title=f"⏳ AGUARDANDO LIBERAÇÃO DA STAFF - {partida['modalidade']}",
                 description=(
                     f"Os jogadores estão prontos!\n\n"
-                    f"👮 **ADM Responsável:** <@{adm['id']}>\n\n"
+                    f"👮 **ADM Responsável:** <@{adm.id}>\n\n"
                     f"O ADM sorteado deve clicar no botão abaixo para disponibilizar sua chave PIX oficial."
                 ),
                 color=0x3498DB
@@ -274,7 +406,7 @@ class CheckInView(discord.ui.View):
             embed_espera.add_field(name="💵 Valor por Jogador", value=f"R$ {partida['valor']}", inline=False)
 
             await canal.send(
-                content=f"🔔 <@{adm['id']}> | Os jogadores estão prontos. Libere sua chave PIX!",
+                content=f"🔔 <@{adm.id}> | Os jogadores estão prontos. Libere sua chave PIX!",
                 embed=embed_espera,
                 view=LiberarPixView()
             )
@@ -331,9 +463,9 @@ class LiberarPixView(discord.ui.View):
         valor_final = round(valor_base + TAXA_FIXA, 2)
         adm = partida["adm"]
 
-        if interaction.user.id != adm["id"]:
+        if interaction.user.id != adm.id:
             await interaction.response.send_message(
-                f"❌ Apenas o ADM sorteado (<@{adm['id']}>) pode liberar esta chave.",
+                f"❌ Apenas o ADM sorteado (<@{adm.id}>) pode liberar esta chave.",
                 ephemeral=True
             )
             return
@@ -345,7 +477,7 @@ class LiberarPixView(discord.ui.View):
         arquivo_qrcode = None
         try:
             qr = qrcode.QRCode(version=1, box_size=10, border=4)
-            qr.add_data(adm["pix"])
+            qr.add_data(adm.pix)
             qr.make(fit=True)
             img = qr.make_image(fill_color="black", back_color="white")
             buffer = io.BytesIO()
@@ -362,8 +494,8 @@ class LiberarPixView(discord.ui.View):
         )
         embed_pagamento.add_field(name="⚔️ Confronto", value=f"{partida['p1'].mention} **VS** {partida['p2'].mention}", inline=False)
         embed_pagamento.add_field(name="💵 Valor por Jogador", value=f"R$ {valor_final:.2f}", inline=False)
-        embed_pagamento.add_field(name="🔑 Chave PIX Oficial", value=f"`{adm['pix']}`", inline=False)
-        embed_pagamento.add_field(name="👮 ADM Fiscal", value=f"<@{adm['id']}>", inline=False)
+        embed_pagamento.add_field(name="🔑 Chave PIX Oficial",value=f"`{adm.pix}`",inline=False)
+        embed_pagamento.add_field( name="👮 ADM Fiscal",value=f"<@{adm.id}>",inline=False)
 
         if arquivo_qrcode:
             embed_pagamento.set_image(url="attachment://qrcode_pix_real.png")
@@ -416,7 +548,7 @@ class PagamentoView(discord.ui.View):
         )
         embed.add_field(name="Desafiantes", value=f"{partida['p1'].mention} **VS** {partida['p2'].mention}")
 
-        id_adm = partida["adm"]["id"]
+        id_adm = partida["adm"].id
         await canal.send(
             content=f"🔔 <@{id_adm}> | Pagamento confirmado, partida liberada!",
             embed=embed,
@@ -621,174 +753,143 @@ async def atualizar_card_fila(guild, canal_id: int, valor: str):
     if canal_painel and msg_id:
         try:
             msg = await canal_painel.fetch_message(msg_id)
+
             fila_info = await queue_manager.obter_fila(canal_id, valor)
+
             fila_normal = fila_info["normal"]
             fila_fullump = fila_info["fullump"]
+
             total_jogadores = len(fila_normal) + len(fila_fullump)
 
             embed = discord.Embed(
                 title=f"💰 MODALIDADE R$ {valor}",
                 description=(
                     f"👥 Jogadores na fila atualmente: **{total_jogadores}**\n"
-                    f"🟢 Normal: **{len(fila_normal)}** | 🔴 Full Ump Xm8: **{len(fila_fullump)}**"
+                    f"🟢 Normal: **{len(fila_normal)}** | "
+                    f"🔴 Full Ump Xm8: **{len(fila_fullump)}**"
                 ),
                 color=0x5865F2
             )
-            if fila_normal:
-                embed.add_field(name="🟢 Normal", value=", ".join([u.mention for u in fila_normal]), inline=False)
-            if fila_fullump:
-                embed.add_field(name="🔴 Full Ump Xm8", value=", ".join([u.mention for u in fila_fullump]), inline=False)
-            if not fila_normal and not fila_fullump:
-                embed.add_field(name="Nenhuma fila ativa", value="Ainda não há jogadores em nenhuma seleção.", inline=False)
 
-            await msg.edit(embed=embed, view=FilaIndividualView(canal_id, valor))
+            if fila_normal:
+                embed.add_field(
+                    name="🟢 Normal",
+                    value=", ".join([u.mention for u in fila_normal]),
+                    inline=False
+                )
+
+            if fila_fullump:
+                embed.add_field(
+                    name="🔴 Full Ump Xm8",
+                    value=", ".join([u.mention for u in fila_fullump]),
+                    inline=False
+                )
+
+            if not fila_normal and not fila_fullump:
+                embed.add_field(
+                    name="Nenhuma fila ativa",
+                    value="Ainda não há jogadores em nenhuma seleção.",
+                    inline=False
+                )
+
+            await msg.edit(
+                embed=embed,
+                view=FilaIndividualView(canal_id, valor)
+            )
+
         except Exception as e:
             print(f"❌ Erro ao atualizar painel {chave_msg}: {e}")
 
 
 async def iniciar_painel_completo(guild):
+    """Cria ou atualiza os painéis - NÃO duplica mais"""
+    
     for canal_id, dados in TODOS_OS_CANAIS.items():
         canal_alvo = guild.get_channel(canal_id)
+
         if not canal_alvo:
             print(f"⚠️ Canal ID {canal_id} não encontrado no servidor.")
             continue
 
         try:
-            await canal_alvo.purge(limit=30)
-            await asyncio.sleep(1.5)
-
+            # Verifica painéis existentes de forma mais precisa
+            paineis_existentes = {}
+            async for msg in canal_alvo.history(limit=50):
+                if msg.author == bot.user and msg.embeds:
+                    embed = msg.embeds[0]
+                    titulo = embed.title if embed.title else ""
+                    
+                    # Procura por "MODALIDADE R$ X.XX" no título
+                    import re
+                    match = re.search(r'MODALIDADE R\$ ([\d\.]+)', titulo)
+                    if match:
+                        valor_encontrado = match.group(1)
+                        paineis_existentes[valor_encontrado] = msg.id
+            
+            # Ordena os valores: maior para o topo, menor para o fim
+            valores_ordenados = sorted(dados["valores"], key=lambda x: float(x), reverse=True)
+            
+            # Verifica se já tem todos os painéis
+            if len(paineis_existentes) == len(dados["valores"]):
+                print(f"✅ Painel completo já existe no canal {canal_alvo.name}. Apenas atualizando...")
+                
+                # Atualiza os IDs no cache
+                for valor, msg_id in paineis_existentes.items():
+                    painel_mensagens_ids[f"{canal_id}_{valor}"] = msg_id
+                
+                # Atualiza cada card
+                for valor in valores_ordenados:
+                    await atualizar_card_fila(guild, canal_id, valor)
+                    await asyncio.sleep(0.5)
+                continue
+            
+            # Se não tem todos, limpa APENAS as mensagens do bot (uma vez só)
+            print(f"📝 Configurando painel no canal {canal_alvo.name}...")
+            
+            # Limpa mensagens do bot (com delay adequado)
+            async for msg in canal_alvo.history(limit=50):
+                if msg.author == bot.user:
+                    try:
+                        await msg.delete()
+                        await asyncio.sleep(0.8)
+                    except:
+                        pass
+            
+            await asyncio.sleep(2)
+            
+            # Embed topo (sempre recria para garantir)
             embed_topo = discord.Embed(
                 title=f"🎮 CENTRAL DE APOSTAS - {dados['nome']}",
                 description=(
                     "Escolha a fila Normal ou Full Ump Xm8.\n"
-                    "As filas são separadas e só confirmam partida quando dois jogadores escolherem a mesma opção."
+                    "As filas são separadas e só confirmam partida "
+                    "quando dois jogadores escolherem a mesma opção."
                 ),
                 color=0x2f3136
             )
             await canal_alvo.send(embed=embed_topo)
-
-            for valor in reversed(dados["valores"]):
+            await asyncio.sleep(1.5)
+            
+            # Cria painéis na ordem correta: MAIOR valor no TOPO
+            for valor in valores_ordenados:
                 embed_fila = discord.Embed(
                     title=f"💰 MODALIDADE R$ {valor}",
                     description="👥 Jogadores na fila atualmente: **0**",
                     color=0x5865F2
                 )
-                msg = await canal_alvo.send(embed=embed_fila, view=FilaIndividualView(canal_id, valor))
+                
+                msg = await canal_alvo.send(
+                    embed=embed_fila,
+                    view=FilaIndividualView(canal_id, valor)
+                )
+                
                 painel_mensagens_ids[f"{canal_id}_{valor}"] = msg.id
-
-            await asyncio.sleep(1.5)
-
-        except discord.HTTPException as e:
-            if e.status == 429:
-                retry = getattr(e, "retry_after", 5) or 5
-                print(f"⚠️ Rate limit no canal {canal_id}. Aguardando {retry}s...")
-                await asyncio.sleep(retry)
-            else:
-                print(f"❌ Erro HTTP ao iniciar painel no canal {canal_id}: {e}")
+                await asyncio.sleep(1)
+            
+            print(f"✅ Painel do canal {dados['nome']} configurado com {len(valores_ordenados)} cards")
+            
         except Exception as e:
-            print(f"❌ Erro ao iniciar painel no canal {canal_id}: {e}")
-
-
-async def criar_partida(guild, canal_origem_id: int, p1, p2, valor, modalidade_nome) -> bool:
-    # Busca a categoria correta com base no canal de fila de origem
-    categoria_id = TODOS_OS_CANAIS.get(canal_origem_id, {}).get("categoria")
-    if not categoria_id:
-        print(f"❌ Categoria não encontrada para o canal {canal_origem_id}!")
-        return False
-
-    categoria = guild.get_channel(categoria_id)
-    if not categoria:
-        print(f"❌ Categoria ID {categoria_id} não encontrada no servidor!")
-        return False
-
-    if not await canais_monitor.pode_usar_canal(categoria_id):
-        return False
-
-    prefixo_nome = modalidade_nome.lower().replace(" ", "-")
-    nome_sala = f"{prefixo_nome}-{random.randint(1000, 9999)}"
-
-    adm_escolhido = escolher_adm()
-    adm_usuario = guild.get_member(adm_escolhido["id"])
-
-    overwrites = {
-        guild.default_role: discord.PermissionOverwrite(read_messages=False),
-        p1: discord.PermissionOverwrite(read_messages=True, send_messages=True, attach_files=True, embed_links=True),
-        p2: discord.PermissionOverwrite(read_messages=True, send_messages=True, attach_files=True, embed_links=True),
-        guild.me: discord.PermissionOverwrite(read_messages=True, send_messages=True, manage_channels=True)
-    }
-    if adm_usuario:
-        overwrites[adm_usuario] = discord.PermissionOverwrite(
-            read_messages=True, send_messages=True, attach_files=True, embed_links=True
-        )
-
-    try:
-        novo_canal = await guild.create_text_channel(
-            name=nome_sala, category=categoria, overwrites=overwrites
-        )
-    except Exception as e:
-        await canais_monitor.registrar_operacao(categoria_id, sucesso=False)
-        print(f"❌ Erro ao criar canal de partida: {e}")
-        return False
-
-    sucesso_db = await criar_partida_db(
-        canal_id=novo_canal.id,
-        modalidade=modalidade_nome,
-        valor=float(valor),
-        jogador1=p1.name,
-        jogador2=p2.name,
-        adm_id=str(adm_escolhido["id"])
-    )
-
-    if not sucesso_db:
-        await canais_monitor.registrar_operacao(novo_canal.id, sucesso=False)
-        try:
-            await novo_canal.delete(reason="Falha ao registrar partida no banco")
-        except Exception:
-            pass
-        return False
-
-    await canais_monitor.registrar_operacao(novo_canal.id, sucesso=True)
-    await event_bus.emit(EVENTO_PARTIDA_CRIADA, {
-        "canal_id": novo_canal.id,
-        "jogador1": p1.id,
-        "jogador2": p2.id,
-        "valor": valor
-    })
-
-    partidas_ativas[novo_canal.id] = {
-        "p1": p1,
-        "p2": p2,
-        "valor": valor,
-        "modalidade": modalidade_nome,
-        "confirmados": [],
-        "adm": adm_escolhido
-    }
-
-    embed_checkin = discord.Embed(
-        title=f"⚔️ CONFRONTO ENCONTRADO - {modalidade_nome}",
-        description=(
-            f"Os jogadores foram pareados!\n\n"
-            f"👉 {p1.mention} **VS** {p2.mention}\n"
-            f"💵 **Valor da Entrada:** R$ {valor}\n\n"
-            f"⚠️ Vocês têm até **2 minutos** para confirmar ou a partida será cancelada por timeout."
-        ),
-        color=0xE74C3C
-    )
-    embed_checkin.add_field(name="🏆 Premiação Bruta", value=f"R$ {float(valor) * 2:.2f}", inline=True)
-    embed_checkin.add_field(name="👮 Fiscal de Mesa", value=f"<@{adm_escolhido['id']}>", inline=True)
-    embed_checkin.add_field(name="Confirmações", value="⏳ Aguardando ambos os jogadores...", inline=False)
-
-    await novo_canal.send(
-        content=f"{p1.mention} {p2.mention} | Confirmem presença!",
-        embed=embed_checkin,
-        view=CheckInView()
-    )
-
-    # Inicia o timeout de 2 minutos para o check-in
-    await iniciar_timeout_partida(novo_canal.id)
-
-    return True
-
+            print(f"❌ Erro ao montar painel no canal {canal_id}: {e}")
 
 # =========================================================
 # TIMEOUT AUTOMÁTICO DE CHECK-IN
