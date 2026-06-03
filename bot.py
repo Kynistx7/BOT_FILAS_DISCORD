@@ -299,20 +299,41 @@ class FilaIndividualView(discord.ui.View):
         self.add_item(btn_full_ump_xm8)
         self.add_item(btn_sair)
 
+    async def normal_callback(self, interaction: discord.Interaction):
+        # 🔥 DEFER IMEDIATO - resolve o erro 404!
+        await interaction.response.defer(ephemeral=True)
+        await self._entrar_fila(interaction, "normal")
+
+    async def full_ump_xm8_callback(self, interaction: discord.Interaction):
+        # 🔥 DEFER IMEDIATO - resolve o erro 404!
+        await interaction.response.defer(ephemeral=True)
+        await self._entrar_fila(interaction, "fullump")
+
+    async def sair_callback(self, interaction: discord.Interaction):
+        # 🔥 DEFER IMEDIATO - resolve o erro 404!
+        await interaction.response.defer(ephemeral=True)
+        user = interaction.user
+        canal_atual_id = self.canal_id
+        sucesso, mensagem = await queue_manager.sair_fila(canal_atual_id, user)
+        await interaction.followup.send(mensagem, ephemeral=True)
+        await atualizar_card_fila(interaction.guild, canal_atual_id, self.valor)
+
     async def _entrar_fila(self, interaction: discord.Interaction, tipo: str):
         user = interaction.user
         canal_atual_id = self.canal_id
         valor_atual = self.valor
 
+        # Processamento (pode ser demorado)
         sucesso, mensagem = await queue_manager.entrar_fila(
             canal_atual_id, valor_atual, tipo, user
         )
 
         if not sucesso:
-            await interaction.response.send_message(mensagem, ephemeral=True)
+            # Usando followup porque já demos defer
+            await interaction.followup.send(mensagem, ephemeral=True)
             return
 
-        await interaction.response.send_message(mensagem, ephemeral=True)
+        await interaction.followup.send(mensagem, ephemeral=True)
         await event_bus.emit(EVENTO_JOGADOR_ENTROU_FILA, {
             "usuario": user.id,
             "canal": canal_atual_id,
@@ -341,19 +362,6 @@ class FilaIndividualView(discord.ui.View):
 
             except Exception as e:
                 print(f"❌ Erro no Matchmaking: {e}")
-
-    async def normal_callback(self, interaction: discord.Interaction):
-        await self._entrar_fila(interaction, "normal")
-
-    async def full_ump_xm8_callback(self, interaction: discord.Interaction):
-        await self._entrar_fila(interaction, "fullump")
-
-    async def sair_callback(self, interaction: discord.Interaction):
-        user = interaction.user
-        canal_atual_id = self.canal_id
-        sucesso, mensagem = await queue_manager.sair_fila(canal_atual_id, user)
-        await interaction.response.send_message(mensagem, ephemeral=True)
-        await atualizar_card_fila(interaction.guild, canal_atual_id, self.valor)
 
 
 class CheckInView(discord.ui.View):
