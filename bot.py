@@ -192,9 +192,12 @@ async def criar_partida(guild, canal_origem_id, p1, p2, valor, modalidade_nome):
         membro_adm = guild.get_member(adm_escolhido.id)
         
         if not membro_adm:
-            membro_adm = await guild.fetch_member(adm_escolhido.id)
+            try:
+                membro_adm = await guild.fetch_member(adm_escolhido.id)
+            except:
+                pass
             if not membro_adm:
-                print(f"❌ ADM não encontrado")
+                print(f"❌ ADM {adm_escolhido.id} não encontrado no servidor")
                 await novo_canal.delete()
                 return False
 
@@ -208,6 +211,7 @@ async def criar_partida(guild, canal_origem_id, p1, p2, valor, modalidade_nome):
                 jogador2=str(p2),
                 adm_id=str(adm_escolhido.id)
             )
+            print(f"✅ Partida registrada no banco: {sucesso_db}")
         except Exception as e:
             print(f"❌ Erro no banco: {e}")
             await novo_canal.delete()
@@ -250,21 +254,26 @@ async def criar_partida(guild, canal_origem_id, p1, p2, valor, modalidade_nome):
         embed_checkin.add_field(name="👮 Fiscal de Mesa", value=f"<@{membro_adm.id}>", inline=True)
         embed_checkin.add_field(name="Confirmações", value="⏳ Aguardando ambos...", inline=False)
 
+        # Enviar a mensagem com o embed e a view
+        print(f"📤 Enviando embed de check-in para {novo_canal.name}")
         await novo_canal.send(
             content=f"{p1.mention} {p2.mention} | Confirmem presença!",
             embed=embed_checkin,
             view=CheckInView()
         )
+        print(f"✅ Embed enviado com sucesso!")
 
         await iniciar_timeout_partida(novo_canal.id)
         return True
         
+    except discord.Forbidden:
+        print(f"❌ Sem permissão para criar canal ou enviar mensagem")
+        return False
     except Exception as e:
         print(f"❌ Erro ao criar partida: {e}")
         import traceback
         traceback.print_exc()
         return False
-
 # =========================================================
 # VIEWS DO SISTEMA (mantidas iguais)
 # =========================================================
@@ -366,36 +375,53 @@ class FilaIndividualView(discord.ui.View):
 
 class CheckInView(discord.ui.View):
     def __init__(self):
-        super().__init__(timeout=None)
+        super().__init__(timeout=120)  # 2 minutos de timeout
 
-    @discord.ui.button(label="✅ Confirmar", style=discord.ButtonStyle.blurple, custom_id="btn_ready")
+    @discord.ui.button(label="✅ Confirmar", style=discord.ButtonStyle.success, custom_id="btn_ready")
     async def pronto(self, interaction: discord.Interaction, button: discord.ui.Button):
+        # Adicionar defer também aqui!
+        await interaction.response.defer(ephemeral=True)
+        
         canal = interaction.channel
         user = interaction.user
 
         if canal.id not in partidas_ativas:
-            await interaction.response.send_message("❌ Esta partida não está mais ativa.", ephemeral=True)
+            await interaction.followup.send("❌ Esta partida não está mais ativa.", ephemeral=True)
             return
 
         partida = partidas_ativas[canal.id]
 
         if user.id != partida["p1"].id and user.id != partida["p2"].id:
-            await interaction.response.send_message("❌ Você não faz parte desta partida.", ephemeral=True)
+            await interaction.followup.send("❌ Você não faz parte desta partida.", ephemeral=True)
             return
 
         if user.id in partida["confirmados"]:
-            await interaction.response.send_message("⚠️ Você já confirmou sua presença!", ephemeral=True)
+            await interaction.followup.send("⚠️ Você já confirmou sua presença!", ephemeral=True)
             return
 
         partida["confirmados"].append(user.id)
-        await interaction.response.send_message("✅ Presença confirmada! Aguardando o oponente...", ephemeral=True)
+        await interaction.followup.send("✅ Presença confirmada! Aguardando o oponente...", ephemeral=True)
 
+        # Atualizar o embed
         embed = interaction.message.embeds[0]
         status_texto = "✅ Confirmados: " + ", ".join([f"<@{uid}>" for uid in partida["confirmados"]])
-        embed.set_field_at(2, name="Confirmações", value=status_texto, inline=False)
-        await interaction.message.edit(embed=embed)
+        
+        # Criar novo embed atualizado
+        novo_embed = discord.Embed(
+            title=embed.title,
+            description=embed.description,
+            color=embed.color
+        )
+        for field in embed.fields:
+            if field.name == "Confirmações":
+                novo_embed.add_field(name=field.name, value=status_texto, inline=field.inline)
+            else:
+                novo_embed.add_field(name=field.name, value=field.value, inline=field.inline)
+        
+        await interaction.message.edit(embed=novo_embed)
 
         if len(partida["confirmados"]) == 2:
+            # Desabilitar botões
             for item in self.children:
                 item.disabled = True
             await interaction.message.edit(view=self)
@@ -418,41 +444,6 @@ class CheckInView(discord.ui.View):
                 embed=embed_espera,
                 view=LiberarPixView()
             )
-
-    @discord.ui.button(label="❌ Cancelar Partida", style=discord.ButtonStyle.danger, custom_id="btn_cancel_checkin")
-    async def cancelar_partida(self, interaction: discord.Interaction, button: discord.ui.Button):
-        canal = interaction.channel
-        user = interaction.user
-
-        if canal.id not in partidas_ativas:
-            await interaction.response.send_message("❌ Esta partida não está mais ativa.", ephemeral=True)
-            return
-
-        partida = partidas_ativas[canal.id]
-
-        if user.id != partida["p1"].id and user.id != partida["p2"].id:
-            await interaction.response.send_message("❌ Você não tem permissão para cancelar esta partida.", ephemeral=True)
-            return
-
-        embed_cancelado = discord.Embed(
-            title="🚫 PARTIDA CANCELADA",
-            description=f"O jogador {user.mention} recusou o confronto.\n\n⚠️ Este canal será deletado em **5 segundos**!",
-            color=0x7289DA
-        )
-        await canal.send(embed=embed_cancelado)
-        await atualizar_status_partida(canal.id, "Cancelada no Check-in")
-        partidas_ativas.pop(canal.id, None)
-
-        for item in self.children:
-            item.disabled = True
-        await interaction.response.edit_message(view=self)
-
-        await asyncio.sleep(5)
-        try:
-            await canal.delete()
-        except Exception:
-            pass
-
 
 class LiberarPixView(discord.ui.View):
     def __init__(self):
